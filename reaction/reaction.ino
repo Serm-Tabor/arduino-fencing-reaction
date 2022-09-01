@@ -2,6 +2,10 @@
 #include <Arduino.h>
 #include <TM1637Display.h>
 
+
+#define SEG_0  0x00
+#define SEG_DP  0b10000000
+
 typedef enum {
   ACTIVATION,
   WAITING,
@@ -15,16 +19,22 @@ typedef enum {
   NOT_SET,
 } Weapons;
 
+typedef enum {
+  SINGLE,
+  MASTER,
+  SLAVE,
+} SyncStates;
+
 /*
  * Sekvence animace spuštění
  */
 const byte START_ANIMATION[6][4] = {
-    {SEG_E | SEG_F, 0x00, 0x00, SEG_B | SEG_C},
-    {SEG_F | SEG_A, 0x00, 0x00, SEG_C | SEG_D},
+    {SEG_E | SEG_F, SEG_0, SEG_0, SEG_B | SEG_C},
+    {SEG_F | SEG_A, SEG_0, SEG_0, SEG_C | SEG_D},
     {SEG_A, SEG_A, SEG_D, SEG_D},
-    {0x00, SEG_A | SEG_D, SEG_A | SEG_D, 0x00},
+    {SEG_0, SEG_A | SEG_D, SEG_A | SEG_D, SEG_0},
     {SEG_D, SEG_D, SEG_A, SEG_A},
-    {SEG_D | SEG_E, 0x00, 0x00, SEG_A | SEG_B},
+    {SEG_D | SEG_E, SEG_0, SEG_0, SEG_A | SEG_B},
 };
 
 const byte FOIL_SEGMENTS[4] = {
@@ -55,7 +65,7 @@ const byte TOO_FAST_SEGMENTS[4] = {
     SEG_G,
 };
 
-const byte EMPTY_SEGMENTS[4] = {0x00, 0x00, 0x00, 0x00};
+const byte EMPTY_SEGMENTS[4] = {SEG_0, SEG_0, SEG_0, SEG_0};
 /* čas v ms pro dobu měření. */
 #define MAX_TIME 10000
 
@@ -63,8 +73,8 @@ const byte EMPTY_SEGMENTS[4] = {0x00, 0x00, 0x00, 0x00};
 #define LONG_PRESS 2000
 
 /* intervaly odloženého startu v ms */
-#define MIN_START_TIME 4000
-#define MAX_START_TIME 10000
+#define MIN_START_TIME 3000
+#define MAX_START_TIME 6000
 
 /* Rychlost animace v ms */
 #define ANIMATION_SPEED 50
@@ -76,6 +86,9 @@ const byte EMPTY_SEGMENTS[4] = {0x00, 0x00, 0x00, 0x00};
 /* Vstupní pin pro kord. Další kabely kordu se zapojují do GND */
 #define EPEE_PIN A0
 #define FOIL_PIN A2
+
+#define SYNC_PIN_INPUT  4
+#define SYNC_PIN_OUTPUT 5
 
 /* Kokntrolní dioda stisknutí zbraně. */
 #define CONTROL_DIODE 13
@@ -96,6 +109,8 @@ const byte EMPTY_SEGMENTS[4] = {0x00, 0x00, 0x00, 0x00};
 States fencer_state = RESULT;
 /* Stav programu */
 Weapons fencer_weapon = NOT_SET;
+/* Stav programu */
+SyncStates sync_state = SINGLE;
 /* Hodnota měření */
 short fencer_result = TIME_OUT;
 /* Interval odloženého startu */
@@ -122,10 +137,20 @@ TM1637Display display(CLK, DIO);
 void setup() {
   pinMode(EPEE_PIN, INPUT_PULLUP);
   pinMode(FOIL_PIN, INPUT_PULLUP);
+  pinMode(SYNC_PIN_INPUT, INPUT);
+  pinMode(SYNC_PIN_OUTPUT, OUTPUT);
   pinMode(CONTROL_DIODE, OUTPUT);
-  display.setBrightness(4);
+  display.setBrightness(7);
   Serial.begin(9600);
   last_weapon_state = check_weapon();
+}
+
+void change_weapon(Weapons weapon) {
+  fencer_state = RESULT;
+  sync_state = SINGLE;
+  fencer_result = CHANGED_WEAPON;
+  fencer_weapon = weapon;
+  digitalWrite(SYNC_PIN_OUTPUT, LOW);
 }
 
 bool check_weapon() {
@@ -137,35 +162,29 @@ bool check_weapon() {
 
   if (epee) {
     if (fencer_weapon != EPEE) {
-      fencer_state = RESULT;
-      fencer_result = CHANGED_WEAPON;
-      fencer_weapon = EPEE;
+      change_weapon(EPEE);
       return true;
     }
   }
 
   if (!foil) {
     if (fencer_weapon != FOIL) {
-      fencer_state = RESULT;
-      fencer_result = CHANGED_WEAPON;
-      fencer_weapon = FOIL;
+      change_weapon(FOIL);
       return false;
     }
   }
 
   switch (fencer_weapon) {
-  case EPEE: {
-    return epee;
-  }
-  case FOIL: {
-    return foil;
-  }
-  case NOT_SET: {
-    fencer_state = RESULT;
-    fencer_result = CHANGED_WEAPON;
-    fencer_weapon = EPEE;
-    return false;
-  }
+    case EPEE: {
+      return epee;
+    }
+    case FOIL: {
+      return foil;
+    }
+    case NOT_SET: {
+      change_weapon(EPEE);
+      return false;
+    }
   }
 
   return false;
@@ -180,7 +199,7 @@ bool check_weapon() {
  */
 void print_result(bool weapon_state) {
   /* Dvojtečka na display - zobrazuje se jen, když je zbraň sepnutá. */
-  byte show_colon = 0b10000000;
+  byte show_colon = SEG_DP;
   if (!weapon_state) {
     show_colon = 0;
   }
@@ -227,6 +246,31 @@ void print_result(bool weapon_state) {
   }
 }
 
+void to_waiting(unsigned long current_time) {
+  /* Definování odloženého startu a přechod do stavu WAITING. V případě SLAVE se čeká na mastra */
+  delay_interval = (sync_state == SLAVE) ? MAX_START_TIME : random(MIN_START_TIME, MAX_START_TIME);
+  delay_start_time = current_time;
+  fencer_result = 0;
+  fencer_state = WAITING;
+  /* Rozsvvítit dvojtečku */
+  uint8_t data[] = {
+      0x00,
+      0x80,
+      0x00,
+      0x00,
+  };
+  display.setSegments(data);
+}
+
+void to_measurement(unsigned long current_time) {
+  fencer_state = MEASUREMENT;
+  measurement_start_time = current_time;
+  if (sync_state == MASTER) {
+    digitalWrite(SYNC_PIN_OUTPUT, HIGH);
+  }
+  display.showNumberDec(0, true);
+}
+
 /**
  * @brief Hlavní smyčka programu
  */
@@ -252,31 +296,50 @@ void loop() {
         }
   
         display.setSegments(START_ANIMATION[animation_frime]);
+
+        if ((digitalRead(SYNC_PIN_INPUT) == HIGH) && (sync_state == SINGLE)) {
+          /* Přepnutí do modu MASTER */
+          sync_state = MASTER;
+        }
         break;
       }
 
-      /* Definování odloženého startu a přechod do stavu WAITING */
-      delay_interval = random(MIN_START_TIME, MAX_START_TIME);
-      delay_start_time = current_time;
-      fencer_result = 0;
-      fencer_state = WAITING;
+      if (sync_state != MASTER) {
+        digitalWrite(SYNC_PIN_OUTPUT, LOW);
+      }
+
+      if ((sync_state == MASTER) && (digitalRead(SYNC_PIN_INPUT) == LOW)) {
+        /* MASTER spouští synchronizační pin */
+        to_waiting(current_time);
+        digitalWrite(SYNC_PIN_OUTPUT, LOW);
+      }
+
+      if (sync_state == SINGLE) {
+        /* SINGLE není synchronizovaný */
+        to_waiting(current_time);
+      }
+
+      if ((sync_state == SLAVE) && (digitalRead(SYNC_PIN_INPUT) == LOW)) {
+        /* SLAVE čeká na MASTER */
+        to_waiting(current_time);
+      }
+
       break;
     }
 
     case WAITING: {
-      /* Rozsvvítit dvojtečku */
-      uint8_t data[] = {
-          0x00,
-          0x80,
-          0x00,
-          0x00,
-      };
-      display.setSegments(data);
+
+      if ((sync_state == SLAVE) && (digitalRead(SYNC_PIN_INPUT) == HIGH)) {
+        /* Čekání na mastera */
+        to_measurement(current_time);
+      }
   
       /* Čas odloženého startu vypršel -> Přechod do stavu MEASUREMENT */
       if (current_time - delay_start_time >= delay_interval) {
-        fencer_state = MEASUREMENT;
-        measurement_start_time = current_time;
+        if (sync_state == MASTER) {
+          digitalWrite(SYNC_PIN_OUTPUT, HIGH);
+        }
+        to_measurement(current_time);
       }
   
       /* Stisknuto před zahájením měření -> Přechod do stavu RESULT s chybou
@@ -290,6 +353,10 @@ void loop() {
 
     case MEASUREMENT: {
       fencer_result = current_time - measurement_start_time;
+
+      if ((sync_state == MASTER) && (fencer_result > 50)) {
+          digitalWrite(SYNC_PIN_OUTPUT, LOW);
+      }
   
       /* Aktuální čas od startu měření (zobrazeno s nulama zleva pro výraznější
        * signál začátku) */
@@ -327,6 +394,14 @@ void loop() {
           (current_time - long_press_start_time >= LONG_PRESS)) {
         fencer_state = ACTIVATION;
         long_press = false;
+
+        /* Počátek synchronizace */
+        digitalWrite(SYNC_PIN_OUTPUT, HIGH);
+        if (digitalRead(SYNC_PIN_INPUT) == HIGH) {
+          sync_state = SLAVE;
+        } else {
+          sync_state = SINGLE;
+        }
       }
       break;
     }
