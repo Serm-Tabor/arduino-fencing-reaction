@@ -37,6 +37,7 @@ const byte START_ANIMATION[6][4] = {
     {SEG_D | SEG_E, SEG_0, SEG_0, SEG_A | SEG_B},
 };
 
+/* Text FOIL */
 const byte FOIL_SEGMENTS[4] = {
     SEG_A | SEG_E | SEG_F | SEG_G,
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
@@ -44,6 +45,7 @@ const byte FOIL_SEGMENTS[4] = {
     SEG_D | SEG_E | SEG_F,
 };
 
+/* Text EPEE */
 const byte EPEE_SEGMENTS[4] = {
     SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,
     SEG_A | SEG_B | SEG_E | SEG_F | SEG_G,
@@ -51,6 +53,7 @@ const byte EPEE_SEGMENTS[4] = {
     SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,
 };
 
+/* Text ---- */
 const byte TIME_OUT_SEGMENTS[4] = {
     SEG_G,
     SEG_G,
@@ -58,6 +61,7 @@ const byte TIME_OUT_SEGMENTS[4] = {
     SEG_G,
 };
 
+/* Text --00-- */
 const byte TOO_FAST_SEGMENTS[4] = {
     SEG_G,
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
@@ -65,6 +69,7 @@ const byte TOO_FAST_SEGMENTS[4] = {
     SEG_G,
 };
 
+/* Bez textu */
 const byte EMPTY_SEGMENTS[4] = {SEG_0, SEG_0, SEG_0, SEG_0};
 /* čas v ms pro dobu měření. */
 #define MAX_TIME 10000
@@ -87,7 +92,9 @@ const byte EMPTY_SEGMENTS[4] = {SEG_0, SEG_0, SEG_0, SEG_0};
 #define EPEE_PIN A0
 #define FOIL_PIN A2
 
+/* Vstupní pin pro synchronizaci */
 #define SYNC_PIN_INPUT  4
+/* Výstupní pin pro synchronizaci */
 #define SYNC_PIN_OUTPUT 5
 
 /* Kokntrolní dioda stisknutí zbraně. */
@@ -126,10 +133,15 @@ bool long_press = false;
 /* Čas řídící animaci při souštění */
 unsigned long animation_time = 0;
 
+/* Kontrolní čas pro výpočet doby cyklu. Používa se jen do Serial.print */
+unsigned long testing_time = 0;
+/* Počet cyklů pro výpočet doby cyklu*/
+float loop_counter;
+
 /* Stav zbraně z předchozího kroku */
 byte last_weapon_state = WEAPON_UNPRESSED;
 /* Objekt pro display s řadičem TM1637 */
-TM1637Display display(CLK, DIO);
+TM1637Display display(CLK, DIO, 80);
 
 /**
  * @brief Inincializace pinů a displaye
@@ -141,10 +153,15 @@ void setup() {
   pinMode(SYNC_PIN_OUTPUT, OUTPUT);
   pinMode(CONTROL_DIODE, OUTPUT);
   display.setBrightness(7);
-  Serial.begin(9600);
+  Serial.begin(115200);
   last_weapon_state = check_weapon();
 }
 
+/**
+ * @brief Přepnutí všech režimů do výchozího stavu. Došlo k výměně zbraní.
+ * 
+ * @param weapon Nová zbraň
+ */
 void change_weapon(Weapons weapon) {
   fencer_state = RESULT;
   sync_state = SINGLE;
@@ -153,27 +170,50 @@ void change_weapon(Weapons weapon) {
   digitalWrite(SYNC_PIN_OUTPUT, LOW);
 }
 
+/**
+ * @brief Pouze testování.
+ * Odešle po Serial průměrný čas jednoho cyklu od posledního voléní této funkce.
+ * 
+ * @param current_time Aktuální čas.
+ */
+void test_time(unsigned long current_time) {
+  float loop_time = (current_time - testing_time) / loop_counter; 
+  loop_counter = 0;
+  testing_time = current_time;
+  Serial.println(loop_time);
+}
+
+/**
+ * @brief Stiskutí zbraně. 
+ * Funkce kontroluje piny pro kord i fleret najednou. Při změmě zbraně spustí change_weapon()
+ * 
+ * @return true pokud je zbraň sepnutá.
+ * @return false pokud není zbraň sepnutá.
+ */
 bool check_weapon() {
-  /* Čtení pinu z připojené zbraně */
+  /* Čtení pinu z připojené zbraně pro kord. Spínání je zapnuto na GDN, takže sepnutý stav je LOW */
   bool epee = digitalRead(EPEE_PIN) == LOW;
 
-  /* Čtení pinu z připojené zbraně */
+  /* Čtení pinu z připojené zbraně pro fleret. Fleret obvod rozpíná, takže sepnutým fleretem odpojíme zem. */
   bool foil = digitalRead(FOIL_PIN) == HIGH;
 
   if (epee) {
+    /* Pin kordu je sepnutý. */
     if (fencer_weapon != EPEE) {
       change_weapon(EPEE);
-      return true;
+      return epee;
     }
   }
 
   if (!foil) {
+    /* Pin fleretu je sepnutý. Fleret je připojený, ale není sepnutý. */
     if (fencer_weapon != FOIL) {
       change_weapon(FOIL);
-      return false;
+      return foil;
     }
   }
 
+  /* Pokud je zbraň vyměněna */
   switch (fencer_weapon) {
     case EPEE: {
       return epee;
@@ -246,7 +286,14 @@ void print_result(bool weapon_state) {
   }
 }
 
+/**
+ * @brief Přepínání do stavu WAITING
+ * Náhodně zvolí interval odloženého startu. Pokud je slave, nastaví ho na MAX.
+ * 
+ * @param current_time Aktuální čas
+ */
 void to_waiting(unsigned long current_time) {
+  test_time(current_time);
   /* Definování odloženého startu a přechod do stavu WAITING. V případě SLAVE se čeká na mastra */
   delay_interval = (sync_state == SLAVE) ? MAX_START_TIME : random(MIN_START_TIME, MAX_START_TIME);
   delay_start_time = current_time;
@@ -262,7 +309,13 @@ void to_waiting(unsigned long current_time) {
   display.setSegments(data);
 }
 
+/**
+ * @brief Přepínání do stavu MEASUREMENT
+ * 
+ * @param current_time Aktuální čas
+ */
 void to_measurement(unsigned long current_time) {
+  test_time(current_time);
   fencer_state = MEASUREMENT;
   measurement_start_time = current_time;
   if (sync_state == MASTER) {
@@ -278,8 +331,10 @@ void loop() {
   /* Aktuální čas na procesoru */
   unsigned long current_time = millis();
   /* Čtení pinu z připojené zbraně */
-  // uint8_t weapon_state = digitalRead(EPEE_PIN);
   bool weapon_state = check_weapon();
+
+  /* Pokuze pro výpočet času jednoho cyklu. */
+  loop_counter++;
 
   /* Kontrolní dioda sepnuté zbraně */
   digitalWrite(CONTROL_DIODE, (weapon_state) ? HIGH : LOW);
@@ -365,12 +420,14 @@ void loop() {
       /* Stisknuto v intervalu -> Předhod do stavu s vísledkem. */
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
         fencer_state = RESULT;
+        test_time(current_time);
       }
   
       /* Čas vypršel -> Předhod do stavu RESULT s chybou TIME_OUT. */
       if (current_time - measurement_start_time >= MAX_TIME) {
         fencer_state = RESULT;
         fencer_result = TIME_OUT;
+        test_time(current_time);
       }
       break;
     }
@@ -402,6 +459,8 @@ void loop() {
         } else {
           sync_state = SINGLE;
         }
+        
+        test_time(current_time);
       }
       break;
     }
@@ -409,5 +468,5 @@ void loop() {
 
   /* Uložení posledního stavu */
   last_weapon_state = weapon_state;
-  delay(1);
+//  delay(1);
 }
