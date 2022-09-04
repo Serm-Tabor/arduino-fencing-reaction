@@ -1,36 +1,38 @@
-# Arduino reaction
+# Arduino attack reaction
 
-Vizuální zobrazení změřeného času reakce. Čas se měří od vizuální signalizace do stiskutí tlačítka. Lze zapojit dvě jednotky, které si sinchronizují čas měření.
+Měření a zobrazení času reakce. Měří se od vizuální signalizace po stiskutí tlačítka. Lze zapojit dvě synchornizované jednotky.
 
-Program je navrhnutý pro spínání zbraní sportovního šermu, nicméně libovolné tlačítko pro měření reakcí.
+Program je navrhnutý pro spínání zbraní sportovního šermu. Každopádně, je možné ho využít s jakýmkoliv tlačítkem.
 
 ## Zprovoznění
 Pro zprovození jednotky potřebujete
-* Arduino 
-* 7 segmentový LED display se 4 znaky (hodinový) s řadičem __TM1637__
+* Arduino dev board
+* Sedmisegmentový LED displej se čtyřmi bloky (hodinový) s řadičem [__TM1637__](https://www.google.com/search?tbm=isch&q=TM1637%20display) 
 
 ### Zapojení zbraně
-Zbraň se do jednotky zapojuje podle následujícího schématu do šňůry pro sportovní šerm:
+Zbraň se do jednotky zapojuje podle následujícího schématu, pomocí kabelu pro sportovní šerm:
 ```
      ---- 
-    |    |=====  <-- FOIL_PIN
+    |    |=====  <-- FOIL_PIN (Fleret)
 ____|    |
          |
 ____     |=====  <-- GND
     |    |
-    |    |=====  <-- EPEE_PIN
+    |    |=====  <-- EPEE_PIN (Kord)
      ---- 
 ```
-Pro připojení zbraně nejsou nutné žádné dopory. Vstupy ze zbraní jsou v režimu __INPUT_PULLUP__.
-#### Zapojení tlačítka místo zbraně:
-Mezi piny __GND__ a __EPEE_PIN__ lze připojit libovolné spínací tlačítko. Pokud máte k dispozici rozpínací tlačítko (při stisnutí obvod přeruší) připojte jej mezipiny __GND__ a __FOIL_PIN__
-### Zapojení displaye
-Display se zapojuje dle knihovny [TM1637](https://github.com/avishorp/TM1637)
+Pro připojení zbraně stačí pouze kabel. Vstupy ze zbraní jsou v režimu __INPUT_PULLUP__.
+
+#### Zapojení tlačítka místo zbraně
+Mezi piny __GND__ a __EPEE_PIN__ lze připojit libovolné spínací tlačítko. Pokud máte k dispozici rozpínací tlačítko (při stisnutí obvod přeruší) připojte jej mezipiny __GND__ a __FOIL_PIN__ .
+
+### Zapojení displeje
+Displej se zapojuje dle knihovny [TM1637](https://github.com/avishorp/TM1637).
 
 ### Zapojení druhé jednotky
-Pro spojení dvou jednotek je třeba piny __SYNC_PIN_INPUT__ uzemnit odporem velikosti přibližně __10 kOhm__.
-Piny zapojení
+Pro spojení dvou jednotek je potřeba uzemnit piny __SYNC_PIN_INPUT__ odporem __10k__.
 
+__Propojení desek__:
 | Jednotka 1 | Jednotka 2
 --- | ---
 | Vin | Vin
@@ -40,6 +42,7 @@ Piny zapojení
 
 ## Chod programu
 Program pracuje ve čtyřech stavech.
+
 ### Výsledek
 Zobrazení změřeného času, a nebo stavu programu.
 
@@ -53,17 +56,21 @@ Zobrazení změřeného času, a nebo stavu programu.
 
 __Rozsvícená dvojtečka__ nadisplay znázorňuje sepnuté tlačítko.
 #### Přechod do stavu Spouštění
-Pokud se drží tlačítko déle než _2s_, přechází se do stavu __Spouštění__
+Pokud se drží tlačítko déle než _2s_, přechází se do stavu __Spouštění__.
+
 ### Spouštění
-Stav je aktivní po celou dobu stisknutého tlačítka. Při odpojení se přechází do stavu __Čekání__
+Stav je aktivní po celou dobu stisknutého tlačítka. Při odpojení se přechází do stavu __Čekání__.
+
 #### Synchronizace
 Pokud jsou dvě jednotky propojeny (přes _SYNC_PIN_INPUT_ a _SYNC_PIN_OUTPUT_) a obě jednotky jsou ve stavu __Spouštění__ tak se synchronizují a na obou jednotkách se měří identický čas.
-### Čekání
-Náhodný interval (_3-6s_), který zabrání odhadnout čas startu měření. Po uplynutí intervalu předhází do stavu __Měření__. Pokud jsou jednotky synchronizovaný, tak interval určí jedna jednotka a druhou spustí do přechodu __Měření__
 
-Pokud se během čekání stiskne tlačítko, přechází se do stavu Výsledek s textem __-00-__ a měření je přerušené.
+### Čekání
+Náhodný interval (_3-6s_), který zabrání odhadnout čas startu měření. Po uplynutí intervalu přechází do stavu __Měření__. Pokud jsou jednotky synchronizovány, tak interval určí jedna jednotka a druhou spustí do přechodu __Měření__.
+
+Pokud se během čekání stiskne tlačítko, přechází se do stavu __Výsledek__ s textem __-00-__ a měření je přerušené.
+
 ### Měření
-Měří se do spuštění tlačítka. Po stiskutí přechází do stavu __Výslekek__. Stav se ukončí i po uplinutí _10s_ s neznámím výsledkem.
+Měří se do sepnutí tlačítka. Po stiskutí přechází do stavu __Výsledek__. Stav se ukončí i po uplynutí _10s_ s neznámým výsledkem.
 
 
 ## Chyby a dodělání
