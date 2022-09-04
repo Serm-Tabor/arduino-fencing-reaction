@@ -7,7 +7,7 @@ Program je navrhnutý pro spínání zbraní sportovního šermu. Každopádně,
 ## Zprovoznění
 Pro zprovození jednotky potřebujete
 * Arduino dev board
-* Sedmisegmentový LED displej se čtyřmi bloky (hodinový) s řadičem [__TM1637__](https://dratek.cz/arduino/893-hodinovy-displej-tm1637.html?gclid=Cj0KCQjwmdGYBhDRARIsABmSEeN5xjNsMmW2zmzlPL15w_U_qf-oygT9aBtiKwMToBvFmY8j9v9A9OgaAiulEALw_wcB) 
+* Sedmisegmentový LED displej se čtyřmi bloky (hodinový) s řadičem [__TM1637__](https://www.google.com/search?tbm=isch&q=TM1637%20display) 
 
 ### Zapojení zbraně
 Zbraň se do jednotky zapojuje podle následujícího schématu, pomocí kabelu pro sportovní šerm:
