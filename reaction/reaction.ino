@@ -143,6 +143,7 @@ byte last_weapon_state = WEAPON_UNPRESSED;
 /* Objekt pro display s řadičem TM1637 */
 TM1637Display display(CLK, DIO, 80);
 
+
 /**
  * @brief Inincializace pinů a displaye
  */
@@ -157,9 +158,10 @@ void setup() {
   last_weapon_state = check_weapon();
 }
 
+
 /**
  * @brief Přepnutí všech režimů do výchozího stavu. Došlo k výměně zbraní.
- * 
+ *
  * @param weapon Nová zbraň
  */
 void change_weapon(Weapons weapon) {
@@ -170,23 +172,25 @@ void change_weapon(Weapons weapon) {
   digitalWrite(SYNC_PIN_OUTPUT, LOW);
 }
 
+
 /**
  * @brief Pouze testování.
  * Odešle po Serial průměrný čas jednoho cyklu od posledního voléní této funkce.
- * 
+ *
  * @param current_time Aktuální čas.
  */
 void test_time(unsigned long current_time) {
-  float loop_time = (current_time - testing_time) / loop_counter; 
+  float loop_time = (current_time - testing_time) / loop_counter;
   loop_counter = 0;
   testing_time = current_time;
   Serial.println(loop_time);
 }
 
+
 /**
- * @brief Stiskutí zbraně. 
+ * @brief Stiskutí zbraně.
  * Funkce kontroluje piny pro kord i fleret najednou. Při změmě zbraně spustí change_weapon()
- * 
+ *
  * @return true pokud je zbraň sepnutá.
  * @return false pokud není zbraň sepnutá.
  */
@@ -229,6 +233,7 @@ bool check_weapon() {
 
   return false;
 }
+
 
 /**
  * @brief Vykreslení změřeného výsledku v ms.
@@ -286,10 +291,11 @@ void print_result(bool weapon_state) {
   }
 }
 
+
 /**
  * @brief Přepínání do stavu WAITING
  * Náhodně zvolí interval odloženého startu. Pokud je slave, nastaví ho na MAX.
- * 
+ *
  * @param current_time Aktuální čas
  */
 void to_waiting(unsigned long current_time) {
@@ -309,9 +315,10 @@ void to_waiting(unsigned long current_time) {
   display.setSegments(data);
 }
 
+
 /**
  * @brief Přepínání do stavu MEASUREMENT
- * 
+ *
  * @param current_time Aktuální čas
  */
 void to_measurement(unsigned long current_time) {
@@ -323,6 +330,7 @@ void to_measurement(unsigned long current_time) {
   }
   display.showNumberDec(0, true);
 }
+
 
 /**
  * @brief Hlavní smyčka programu
@@ -349,7 +357,7 @@ void loop() {
           animation_frime = 0;
           animation_time = current_time;
         }
-  
+
         display.setSegments(START_ANIMATION[animation_frime]);
 
         if ((digitalRead(SYNC_PIN_INPUT) == HIGH) && (sync_state == SINGLE)) {
@@ -388,7 +396,7 @@ void loop() {
         /* Čekání na mastera */
         to_measurement(current_time);
       }
-  
+
       /* Čas odloženého startu vypršel -> Přechod do stavu MEASUREMENT */
       if (current_time - delay_start_time >= delay_interval) {
         if (sync_state == MASTER) {
@@ -396,7 +404,7 @@ void loop() {
         }
         to_measurement(current_time);
       }
-  
+
       /* Stisknuto před zahájením měření -> Přechod do stavu RESULT s chybou
        * TOO_FAST */
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
@@ -412,17 +420,17 @@ void loop() {
       if ((sync_state == MASTER) && (fencer_result > 50)) {
           digitalWrite(SYNC_PIN_OUTPUT, LOW);
       }
-  
+
       /* Aktuální čas od startu měření (zobrazeno s nulama zleva pro výraznější
        * signál začátku) */
       display.showNumberDec(fencer_result, true);
-  
+
       /* Stisknuto v intervalu -> Předhod do stavu s vísledkem. */
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
         fencer_state = RESULT;
         test_time(current_time);
       }
-  
+
       /* Čas vypršel -> Předhod do stavu RESULT s chybou TIME_OUT. */
       if (current_time - measurement_start_time >= MAX_TIME) {
         fencer_state = RESULT;
@@ -434,18 +442,18 @@ void loop() {
 
     case RESULT: {
       print_result(weapon_state);
-  
+
       /* Rušení dlouhého stisku */
       if (!weapon_state) {
         long_press = false;
       }
-  
+
       /* Začátek dlouhého stisku */
       if (weapon_state && (weapon_state != last_weapon_state)) {
         long_press_start_time = current_time;
         long_press = true;
       }
-  
+
       /* PŘECHOD DO STATUSU ACTIVATION */
       if (long_press && weapon_state &&
           (current_time - long_press_start_time >= LONG_PRESS)) {
@@ -459,7 +467,7 @@ void loop() {
         } else {
           sync_state = SINGLE;
         }
-        
+
         test_time(current_time);
       }
       break;
