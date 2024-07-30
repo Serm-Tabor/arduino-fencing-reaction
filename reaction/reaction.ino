@@ -1,32 +1,142 @@
 
 #include <Arduino.h>
 #include <TM1637Display.h>
+/**
+ * @file reaction.ino - Measurement of reaction time for epee and foil fencing
+ *
+ * This file contains the main program for measuring reaction time of fencers
+ * using arduino board. The program uses TM1637 display to show the result.
+ *
+ * The program uses interrupts to detect the reaction time. Interrupts are important to measure the reaction accurately.
+ * The reaction time is measured from the moment show measurement time until the weapon is touched.
+ * The start measurement time is delayed in random interval between MIN_START_TIME and MAX_START_TIME after activation.
+ * The activation is enabled by pressing the weapon a few seconds.
+ * The program uses different states to control the measurement process.
+ * The program also supports synchronization of multiple fencers.
+ *
+ * Restrictions for UNO, nano and mini boards:
+ *   These boards have only two interrupt pins (2, 3).
+ *   So the program can be used for both weapons, but without synchronization.
+ *   Or one weapon and synchronization with another board.
+ *
+ *
+ * The board has the following connections:
+ *
+ *      ----
+ *     |    |=====  <-- FOIL_PIN
+ * ____|    |
+ *          |
+ * ____     |=====  <-- GND
+ *     |    |
+ *     |    |=====  <-- EPEE_PIN
+ *      ----
+ */
 
 
-#define SEG_0  0x00
-#define SEG_DP  0b10000000
 
+//
+// Program Constants
+//
+
+// Definitions of segment values
+#define SEG_0  0x00  ///< Empty segment
+#define SEG_DP  0b10000000  ///< Decimal point
+
+// Colon value for function showNumberDecEx in library TM1637Display.h
+#define COLON_ENABLED 0b01000000
+#define COLON_DISABLED 0b0
+
+
+/* Measuring time in milliseconds. */
+#define MAX_TIME 10000
+
+/* Long press time in milliseconds. */
+#define LONG_PRESS 2000
+
+/* Delayed start time intervals in milliseconds. */
+#define MIN_START_TIME 3000
+#define MAX_START_TIME 6000
+
+/* Animation speed in milliseconds. */
+#define ANIMATION_SPEED 50
+
+/* Pin numbers for communication with the display. */
+#define CLK 7
+#define DIO 6
+
+/* Input pin for the foil. Other foil wires are connected to GND. */
+#define EPEE_PIN 2      // Interrupt pin for the epee
+#define FOIL_PIN 4      // Interrupt pin for the foil (NOT supported for UNO, nano and mini board!)
+
+/* Input pin for synchronization. */
+#define SYNC_PIN_INPUT  3 // Interrupt pin for synchronization
+/* Output pin for synchronization. */
+#define SYNC_PIN_OUTPUT 5
+
+/* Control diode indicating the pressed weapon. */
+#define CONTROL_DIODE 13
+
+/* The epee pin is pressed (INPUT_PULLUP and the pin is activated by GND connection). */
+#define EPEE_PRESSED LOW
+/* The foil pin is pressed (INPUT_PULLUP and the pin is activated by GND connection). */
+#define FOIL_PRESSED HIGH
+
+/* Delay time of loop in milliseconds. */
+#define DELAY_TIME 1
+
+
+//
+// Enumerations
+//
+
+/**
+ * @brief Enumeration of states of the program
+ */
 typedef enum {
-  ACTIVATION,
-  WAITING,
-  MEASUREMENT,
-  RESULT,
+  ACTIVATION,  ///< Activation state - waiting for weapon long touch
+  WAITING,  ///< Waiting state - waiting for synchronization
+  MEASUREMENT,  ///< Measurement state - measuring reaction time
+  RESULT,  ///< Result state - showing the result
 } States;
 
+
+/**
+ * @brief Enumeration of fencing weapons
+ */
 typedef enum {
-  EPEE,
-  FOIL,
-  NOT_SET,
+  EPEE,  ///< Epee weapon
+  FOIL,  ///< Foil weapon
+  NOT_SET,  ///< Weapon not set
 } Weapons;
 
+
+/**
+ * @brief Enumeration of synchronization states
+ */
 typedef enum {
-  SINGLE,
-  MASTER,
-  SLAVE,
+  SINGLE,  ///< Single mode - no synchronization
+  MASTER,  ///< Master mode - synchronizing other fencers
+  SLAVE,  ///< Slave mode - waiting for synchronization signal
 } SyncStates;
 
-/*
- * Sekvence animace spuštění
+
+/**
+ * @brief Enumeration of reaction time results
+ */
+typedef enum {
+    TOO_FAST = -1,  ///< Reaction time too fast
+    TIME_OUT = -2,  ///< Reaction time timeout
+    CHANGED_WEAPON = -3,  ///< Weapon changed during measurement
+} FencerResults;
+
+
+
+//
+// Display Constants
+//
+
+/**
+ * @brief Sequence of start animation
  */
 const byte START_ANIMATION[6][4] = {
     {SEG_E | SEG_F, SEG_0, SEG_0, SEG_B | SEG_C},
@@ -37,31 +147,51 @@ const byte START_ANIMATION[6][4] = {
     {SEG_D | SEG_E, SEG_0, SEG_0, SEG_A | SEG_B},
 };
 
-/* Text FOIL */
+/**
+ * @brief Length of the animation sequence
+ */
+const size_t ANIMATION_LENGTH = sizeof(START_ANIMATION) / sizeof(START_ANIMATION[0]);
+
+/**
+ * @brief Segments for FOIL text
+ */
 const byte FOIL_SEGMENTS[4] = {
+    // F
     SEG_A | SEG_E | SEG_F | SEG_G,
+    // O
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
+    // I
     SEG_E | SEG_F,
+    // L
     SEG_D | SEG_E | SEG_F,
 };
 
-/* Text EPEE */
+/**
+ * @brief Segments for EPEE text
+ */
 const byte EPEE_SEGMENTS[4] = {
+    // E
     SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,
+    // P
     SEG_A | SEG_B | SEG_E | SEG_F | SEG_G,
+    // E
     SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,
+    // E
     SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,
 };
 
-/* Text ---- */
+/**
+ * @brief Segments for TIME_OUT text
+ *      - - - -
+ */
 const byte TIME_OUT_SEGMENTS[4] = {
-    SEG_G,
-    SEG_G,
-    SEG_G,
-    SEG_G,
+    SEG_G, SEG_G, SEG_G, SEG_G
 };
 
-/* Text --00-- */
+/**
+ * @brief Segments for TOO_FAST text
+ *      - 0 0 -
+ */
 const byte TOO_FAST_SEGMENTS[4] = {
     SEG_G,
     SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,
@@ -69,344 +199,415 @@ const byte TOO_FAST_SEGMENTS[4] = {
     SEG_G,
 };
 
-/* Bez textu */
-const byte EMPTY_SEGMENTS[4] = {SEG_0, SEG_0, SEG_0, SEG_0};
-/* čas v ms pro dobu měření. */
-#define MAX_TIME 10000
-
-/* čas v ms pro dlouhé stisknutí */
-#define LONG_PRESS 2000
-
-/* intervaly odloženého startu v ms */
-#define MIN_START_TIME 3000
-#define MAX_START_TIME 6000
-
-/* Rychlost animace v ms */
-#define ANIMATION_SPEED 50
-
-/* Piny pro komunikaci s displayem */
-#define CLK 3
-#define DIO 2
-
-/* Vstupní pin pro kord. Další kabely kordu se zapojují do GND */
-#define EPEE_PIN A0
-#define FOIL_PIN A2
-
-/* Vstupní pin pro synchronizaci */
-#define SYNC_PIN_INPUT  4
-/* Výstupní pin pro synchronizaci */
-#define SYNC_PIN_OUTPUT 5
-
-/* Kokntrolní dioda stisknutí zbraně. */
-#define CONTROL_DIODE 13
-
-/* čas výsledku pro vypršení času */
-#define TIME_OUT -2
-/* čas výsledku pro předčasné spuštění */
-#define TOO_FAST -1
-/* čas výsledku pro předčasné spuštění */
-#define CHANGED_WEAPON -3
-
-/* zbraň stiskuta (INPUT_PULLUP a pin se spína přes GND) */
-#define WEAPON_PRESSED LOW
-/* zbraň odpojena (INPUT_PULLUP a pin se spína přes GND) */
-#define WEAPON_UNPRESSED HIGH
-
-/* Stav programu */
-States fencer_state = RESULT;
-/* Stav programu */
-Weapons fencer_weapon = NOT_SET;
-/* Stav programu */
-SyncStates sync_state = SINGLE;
-/* Hodnota měření */
-short fencer_result = TIME_OUT;
-/* Interval odloženého startu */
-unsigned long delay_interval = 0;
-/* Čas začátku odloženého startu */
-unsigned long delay_start_time = 0;
-/* Čas začátku měření */
-unsigned long measurement_start_time = 0;
-/* Čas začátku dlouhého stisku */
-unsigned long long_press_start_time = 0;
-/* True, během dlouhého stisku */
-bool long_press = false;
-/* Čas řídící animaci při souštění */
-unsigned long animation_time = 0;
-
-/* Kontrolní čas pro výpočet doby cyklu. Používa se jen do Serial.print */
-unsigned long testing_time = 0;
-/* Počet cyklů pro výpočet doby cyklu*/
-float loop_counter;
-
-/* Stav zbraně z předchozího kroku */
-byte last_weapon_state = WEAPON_UNPRESSED;
-/* Objekt pro display s řadičem TM1637 */
-TM1637Display display(CLK, DIO, 80);
-
+/**
+ * @brief Segments for empty text
+ */
+const byte EMPTY_SEGMENTS[4] = {
+    SEG_0, SEG_0, SEG_0, SEG_0
+};
 
 /**
- * @brief Inincializace pinů a displaye
+ * @brief Segments for colon only
+ *      __ : __
+ */
+const byte COLON_ONLY[4] = {
+    SEG_DP, SEG_DP, SEG_DP, SEG_DP
+};
+
+
+
+//
+// Program Variables
+//
+
+/**  The program state */
+States fencer_state = RESULT;
+
+/**  Weapon type */
+Weapons fencer_weapon = NOT_SET;
+
+/**  Synchronization type */
+SyncStates sync_state = SINGLE;
+
+/**  Measuring result. Positive value is the reaction time in milliseconds and negative value is measurement error */
+short fencer_result = TIME_OUT;
+
+/**  Delayed start interval */
+unsigned long delay_interval = 0;
+
+/**  The time stamp for the delay start. */
+unsigned long delay_start_time = 0;
+
+/**  The time stamp for measurement start time */
+unsigned long measurement_start_time = 0;
+
+/**  The time stamp for start of the long press */
+unsigned long long_press_start_time = 0;
+
+/**  True if during the long press */
+bool long_press = false;
+
+/**  Time controlling the animation during the release */
+unsigned long animation_time = 0;
+
+/**  Weapon state from the previous step */
+bool last_weapon_state = false;
+
+/**  Object for the display controller TM1637 */
+TM1637Display display(CLK, DIO);
+
+/**  Touch time */
+volatile unsigned long touch_time = 0;
+
+/**  Synchronization touch time */
+volatile unsigned long sync_time = 0;
+
+/**  Synchronization touch state */
+volatile bool sync_touch = false;
+
+/**  Epee touch state */
+volatile bool epee_touch = false;
+
+/**  Foil touch state */
+volatile bool foil_touch = false;
+
+
+
+//
+// Program Functions
+//
+
+/**
+ * @brief Initialize pins and display.
+ *
+ * Initializes input and output pins.
+ * Attaches interrupt functions to the foil, epee and sync input pins.
+ * Calls the init_weapon function.
  */
 void setup() {
-  pinMode(EPEE_PIN, INPUT_PULLUP);
-  pinMode(FOIL_PIN, INPUT_PULLUP);
-  pinMode(SYNC_PIN_INPUT, INPUT);
-  pinMode(SYNC_PIN_OUTPUT, OUTPUT);
-  pinMode(CONTROL_DIODE, OUTPUT);
+
+  // Set the mode of the pins pins
+  pinMode(EPEE_PIN, INPUT_PULLUP); // foil
+  pinMode(FOIL_PIN, INPUT_PULLUP); // epee
+  pinMode(SYNC_PIN_INPUT, INPUT); // sync input
+  pinMode(SYNC_PIN_OUTPUT, OUTPUT); // sync output
+  pinMode(CONTROL_DIODE, OUTPUT); // control diode
+
+  // Attach interrupt functions to the foil, epee and sync input pins
+  attachInterrupt(digitalPinToInterrupt(SYNC_PIN_INPUT), sync_interrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(EPEE_PIN), epee_interrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(FOIL_PIN), foil_interrupt, CHANGE);
+
   display.setBrightness(7);
-  Serial.begin(115200);
-  last_weapon_state = check_weapon();
+
+  // Initialize the weapon
+  init_weapon();
 }
 
 
 /**
- * @brief Přepnutí všech režimů do výchozího stavu. Došlo k výměně zbraní.
+ * @brief Change weapon and reset all states
  *
- * @param weapon Nová zbraň
+ * Resets fencer states to RESULT and sync state to SINGLE.
+ * Sets fencer_result to CHANGED_WEAPON.
+ * Sets fencer_weapon to the new weapon.
+ * Turns off sync pin.
+ *
+ * @param weapon New weapon
  */
 void change_weapon(Weapons weapon) {
+  // Reset fencer states and sync state
   fencer_state = RESULT;
   sync_state = SINGLE;
+
+  // Set fencer_result and fencer_weapon
   fencer_result = CHANGED_WEAPON;
   fencer_weapon = weapon;
+
+  // Turn off sync pin
   digitalWrite(SYNC_PIN_OUTPUT, LOW);
 }
 
 
 /**
- * @brief Pouze testování.
- * Odešle po Serial průměrný čas jednoho cyklu od posledního voléní této funkce.
+ * @brief Initialize the weapon
  *
- * @param current_time Aktuální čas.
+ * Read the state of the pins for the epee and the foil. Then set the weapon for the program.
+ *
+ * @return The initialized weapon
  */
-void test_time(unsigned long current_time) {
-  float loop_time = (current_time - testing_time) / loop_counter;
-  loop_counter = 0;
-  testing_time = current_time;
-  Serial.println(loop_time);
+Weapons init_weapon() {
+    // Read the state of the pins
+    bool epee_state = digitalRead(EPEE_PIN) == EPEE_PRESSED;
+
+    // Foil is switched on by default. So the detect of foil is during in connect weapon, not in valid hit.
+    bool foil_state = digitalRead(FOIL_PIN) == LOW;
+
+    // Check the state of the pins and set the weapon.
+    if (epee_state) {
+        change_weapon(EPEE);
+        return EPEE;
+    } else if (foil_state) {
+        change_weapon(FOIL);
+        return FOIL;
+    }
+    // Neither button is pressed, return NOT_SET
+    return NOT_SET;
 }
 
 
 /**
- * @brief Stiskutí zbraně.
- * Funkce kontroluje piny pro kord i fleret najednou. Při změmě zbraně spustí change_weapon()
+ * @brief Check if the weapon has a valid hit
  *
- * @return true pokud je zbraň sepnutá.
- * @return false pokud není zbraň sepnutá.
+ * Get value from epee_touch or foil_touch depending on the connected weapon.
+ *
+ * @return true if the weapon has a valid hit, false otherwise
  */
-bool check_weapon() {
-  /* Čtení pinu z připojené zbraně pro kord. Spínání je zapnuto na GDN, takže sepnutý stav je LOW */
-  bool epee = digitalRead(EPEE_PIN) == LOW;
-
-  /* Čtení pinu z připojené zbraně pro fleret. Fleret obvod rozpíná, takže sepnutým fleretem odpojíme zem. */
-  bool foil = digitalRead(FOIL_PIN) == HIGH;
-
-  if (epee) {
-    /* Pin kordu je sepnutý. */
-    if (fencer_weapon != EPEE) {
-      change_weapon(EPEE);
-      return epee;
+bool is_touched() {
+    if (fencer_weapon == EPEE) {
+        return epee_touch;
     }
-  }
 
-  if (!foil) {
-    /* Pin fleretu je sepnutý. Fleret je připojený, ale není sepnutý. */
-    if (fencer_weapon != FOIL) {
-      change_weapon(FOIL);
-      return foil;
+    if (fencer_weapon == FOIL) {
+        return foil_touch;
     }
-  }
 
-  /* Pokud je zbraň vyměněna */
-  switch (fencer_weapon) {
-    case EPEE: {
-      return epee;
-    }
-    case FOIL: {
-      return foil;
-    }
-    case NOT_SET: {
-      change_weapon(EPEE);
-      return false;
-    }
-  }
-
-  return false;
+    return false;
 }
 
 
 /**
- * @brief Vykreslení změřeného výsledku v ms.
- * Při záporné hodnotě výsledku se nevykresluje čas, ale důvod zrušení měření.
+ * @brief Get segments text for different states.
  *
- * @param weapon_state při hodnotě WEAPON_PRESSED se vykresluje dvojtečka na
- * display. Vizuální odezva sepnuté zbraně.
+ * Transform enum FencerResults into byte array representing segments.
+ *
+ * @param result Short integer representing the problem result.
+ * @return Pointer to byte array representing segments on display.
+ */
+byte* get_result_problem(short result) {
+    switch (result) {
+        // Time out.
+        case TIME_OUT: {
+            return TIME_OUT_SEGMENTS;
+        }
+        // Too fast.
+        case TOO_FAST: {
+            return TOO_FAST_SEGMENTS;
+        }
+        // Weapon changed.
+        case CHANGED_WEAPON: {
+            // Return segments for current weapon.
+            switch (fencer_state) {
+                // Epee
+                case EPEE: {
+                    return EPEE_SEGMENTS;
+                }
+                // Foil
+                case FOIL: {
+                    return FOIL_SEGMENTS;
+                }
+                // Weapon not set
+                default: {
+                    return TIME_OUT_SEGMENTS;
+                }
+            }
+
+        }
+        // Default case, without info status.
+        default: {
+            return EMPTY_SEGMENTS;
+        }
+    }
+}
+
+
+/**
+ * @brief Print the measured result in milliseconds.
+ *
+ * If the result is negative, the time is not displayed, but the reason for cancellation is displayed.
+ *
+ * @param weapon_state If it is WEAPON_PRESSED, the decimal point is displayed on the display.
+ * The visual response to the raised weapon.
  */
 void print_result(bool weapon_state) {
-  /* Dvojtečka na display - zobrazuje se jen, když je zbraň sepnutá. */
-  byte show_colon = SEG_DP;
-  if (!weapon_state) {
-    show_colon = 0;
+
+  // If the result is positive, display it in milliseconds.
+  if (fencer_result > 0) {
+    display.showNumberDecEx(fencer_result, (weapon_state) ? COLON_ENABLED : COLON_DISABLED);
+    return;
   }
 
-  /* Zobrazení špatných výsledků (čas vypršel nebo stisnuto před startem) */
-  if (fencer_result < 0) {
-    byte *text;
-    //        byte text[4];
+  // Display bad results (time expired or pressed before the start).
+  byte data[4];
+  memcpy(data, get_result_problem(fencer_result), 4);
 
-    switch (fencer_result) {
-      case TIME_OUT: {
-        text = TIME_OUT_SEGMENTS;
-        break;
-      }
-      case TOO_FAST: {
-        text = TOO_FAST_SEGMENTS;
-        break;
-      }
-      case CHANGED_WEAPON: {
-        text = (fencer_weapon == EPEE) ? EPEE_SEGMENTS : FOIL_SEGMENTS;
-        break;
-      }
-      default: {
-        text = EMPTY_SEGMENTS;
-        break;
-      }
-    }
-
-    byte data[4];
-    for (byte i = 0; i < 4; i++) {
-      data[i] = *(text + i);
-    }
-    data[1] |= show_colon;
-    display.setSegments(data);
+  // If the weapon is raised, display the decimal point on the display.
+  if (weapon_state) {
+    // Decimal point on the display - it is displayed only when the weapon is raised.
+    data[1] |= SEG_DP;
   }
 
-  /* Zobrazení správhého výsledku */
-  else {
-    if (weapon_state) {
-      // Hodnota pro rozsvícení dvojtečky je jiná než pro metodu setSegments.
-      show_colon = 0b11100000;
-    }
-    display.showNumberDecEx(fencer_result, show_colon);
-  }
-}
-
-
-/**
- * @brief Přepínání do stavu WAITING
- * Náhodně zvolí interval odloženého startu. Pokud je slave, nastaví ho na MAX.
- *
- * @param current_time Aktuální čas
- */
-void to_waiting(unsigned long current_time) {
-  test_time(current_time);
-  /* Definování odloženého startu a přechod do stavu WAITING. V případě SLAVE se čeká na mastra */
-  delay_interval = (sync_state == SLAVE) ? MAX_START_TIME : random(MIN_START_TIME, MAX_START_TIME);
-  delay_start_time = current_time;
-  fencer_result = 0;
-  fencer_state = WAITING;
-  /* Rozsvvítit dvojtečku */
-  uint8_t data[] = {
-      0x00,
-      0x80,
-      0x00,
-      0x00,
-  };
+  // Display the result on the display.
   display.setSegments(data);
 }
 
 
 /**
- * @brief Přepínání do stavu MEASUREMENT
+ * @brief Switch to the WAITING state
  *
- * @param current_time Aktuální čas
+ * Set a random delay for the delayed start, or wait for the synchronization signal in the SLAVE state.
+ * Display the dvojtečka on the display.
  */
-void to_measurement(unsigned long current_time) {
-  test_time(current_time);
-  fencer_state = MEASUREMENT;
-  measurement_start_time = current_time;
-  if (sync_state == MASTER) {
-    digitalWrite(SYNC_PIN_OUTPUT, HIGH);
-  }
-  display.showNumberDec(0, true);
+void to_waiting() {
+  digitalWrite(SYNC_PIN_OUTPUT, LOW);
+  // Define the random delay for the delayed start.
+  // If the current state is SLAVE, set the delay to maximum. Slave is waiting for the synchronization signal..
+  delay_interval = (sync_state == SLAVE) ? MAX_START_TIME : random(MIN_START_TIME, MAX_START_TIME);
+
+  // Set the start time of the delay
+  delay_start_time = millis();
+  // Set the result to zero.
+  fencer_result = 0;
+  fencer_state = WAITING;
+  // Show only colon on the display like a waiting mode
+  display.setSegments(COLON_ONLY);
 }
 
 
 /**
- * @brief Hlavní smyčka programu
+ * @brief Prepare to the MEASUREMENT state and start the measurement
+ *
+ * If the current state is MASTER, the synchronization pin is set to HIGH.
+ * The start time of the measurement is set to the current time if the current state is SLAVE.
+ * Else it's set to the time when the synchronization signal was received.
+ * The display is set to show the number 8888 in blinking mode.
+ */
+void to_measurement() {
+  fencer_state = MEASUREMENT;
+
+  // Send the synchronization signal if the current state is MASTER
+  if (sync_state == MASTER) {
+    digitalWrite(SYNC_PIN_OUTPUT, HIGH);
+  }
+
+  // Set the start time of the measurement. If the current state is SLAVE, the start time is from the synchronization signal
+  measurement_start_time = (sync_state == SLAVE) ? sync_time : millis();
+
+  // Show the number 8888 for better visibility the start of the measurement.
+  display.showNumberDec(8888, true);
+}
+
+
+/**
+ * Sets the fencer state to ACTIVATION and initializes the animation time.
+ * Starts synchronization by setting the synchronization pin to HIGH.
+ * If the sync pin is enabled, it sets the sync state to SLAVE. Otherwise, it sets it to SINGLE.
+ */
+void to_activation() {
+  fencer_state = ACTIVATION; // Set the fencer state to ACTIVATION
+  animation_time = millis(); // Initialize the animation time
+
+  /* Start synchronization */
+  digitalWrite(SYNC_PIN_OUTPUT, HIGH); // Set the synchronization pin to HIGH
+
+  // Default state is single. If the sync pin is enabled, it will change to slave.
+  // The master mod can change in activation status when sync changes to high.
+  sync_state = (sync_touch) ? SLAVE : SINGLE; // Set the sync state based on the sync pin
+}
+
+
+
+/**
+ * Updates the waiting animation on the LED display based on the elapsed time.
+ *
+ * @param current_time The current time in milliseconds.
+ */
+void waiting_animation(unsigned long current_time) {
+  // Calculate the animation frame based on the elapsed time
+  int animation_frame = (current_time - animation_time) / ANIMATION_SPEED;
+  // If the animation frame exceeds the length, reset it and update the
+  // animation time
+  if (animation_frame >= ANIMATION_LENGTH) {
+    animation_frame = 0;
+    animation_time = current_time;
+  }
+
+  // Display the animation frame on the LED display
+  display.setSegments(START_ANIMATION[animation_frame]);
+}
+
+
+/**
+ * @brief The main loop of the program
+ *
+ * It handles the state of the fencer,
+ * including the waiting, measurement, and result states. It also
+ * includes the logic for the activation state.
  */
 void loop() {
-  /* Aktuální čas na procesoru */
+  // Actual time on the processor in milliseconds
   unsigned long current_time = millis();
-  /* Čtení pinu z připojené zbraně */
-  bool weapon_state = check_weapon();
 
-  /* Pokuze pro výpočet času jednoho cyklu. */
-  loop_counter++;
+  // Check if the fencer has not been initialized
+  if (fencer_weapon == NOT_SET) {
+      init_weapon();
+  }
 
-  /* Kontrolní dioda sepnuté zbraně */
+  bool weapon_state = is_touched();
+
+  // Control diode of the activated weapon
   digitalWrite(CONTROL_DIODE, (weapon_state) ? HIGH : LOW);
 
   switch (fencer_state) {
     case ACTIVATION: {
-      /* Animace při stisknuté zbrani */
+      // Check if the weapon is being held down
       if (weapon_state) {
-        int animation_frime = (current_time - animation_time) / ANIMATION_SPEED;
-        if (animation_frime >=
-            sizeof(START_ANIMATION) / sizeof(START_ANIMATION[0])) {
-          animation_frime = 0;
-          animation_time = current_time;
-        }
+        // Display waiting animation
+        waiting_animation(current_time);
 
-        display.setSegments(START_ANIMATION[animation_frime]);
-
-        if ((digitalRead(SYNC_PIN_INPUT) == HIGH) && (sync_state == SINGLE)) {
-          /* Přepnutí do modu MASTER */
+        // If the sync pin is not being held down while in SINGLE mode, switch to MASTER mode
+        if (sync_touch && (sync_state == SINGLE)) {
           sync_state = MASTER;
         }
         break;
       }
 
-      if (sync_state != MASTER) {
-        digitalWrite(SYNC_PIN_OUTPUT, LOW);
-      }
-
-      if ((sync_state == MASTER) && (digitalRead(SYNC_PIN_INPUT) == LOW)) {
-        /* MASTER spouští synchronizační pin */
-        to_waiting(current_time);
-        digitalWrite(SYNC_PIN_OUTPUT, LOW);
-      }
-
-      if (sync_state == SINGLE) {
-        /* SINGLE není synchronizovaný */
-        to_waiting(current_time);
-      }
-
-      if ((sync_state == SLAVE) && (digitalRead(SYNC_PIN_INPUT) == LOW)) {
-        /* SLAVE čeká na MASTER */
-        to_waiting(current_time);
+      switch (sync_state) {
+        case MASTER:
+          // If in MASTER mode waiting for synchronization of another fencer.
+          if (!sync_touch) {
+            to_waiting();
+          }
+          break;
+        case SINGLE:
+          // If in SINGLE mode, go to waiting mode
+          to_waiting();
+          break;
+        case SLAVE:
+          // If in SLAVE mode, turn off the synchronization pin before going to waiting mode
+          digitalWrite(SYNC_PIN_OUTPUT, LOW);
+          // If in SLAVE mode waiting for synchronization of another fencer.
+          if (!sync_touch) {
+            to_waiting();
+          }
+          break;
       }
 
       break;
     }
 
     case WAITING: {
-
-      if ((sync_state == SLAVE) && (digitalRead(SYNC_PIN_INPUT) == HIGH)) {
-        /* Čekání na mastera */
-        to_measurement(current_time);
+      // If in SLAVE mode waiting for synchronization before go to measurement mode
+      if ((sync_state == SLAVE) && sync_touch) {
+        to_measurement();
       }
 
-      /* Čas odloženého startu vypršel -> Přechod do stavu MEASUREMENT */
+      // Go to measurement mode after delay start.
       if (current_time - delay_start_time >= delay_interval) {
-        if (sync_state == MASTER) {
-          digitalWrite(SYNC_PIN_OUTPUT, HIGH);
-        }
-        to_measurement(current_time);
+        to_measurement();
       }
 
-      /* Stisknuto před zahájením měření -> Přechod do stavu RESULT s chybou
-       * TOO_FAST */
+      // If the weapon is pressed before the start of the measurement, go to result mode with an error TOO_FAST
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
         fencer_state = RESULT;
         fencer_result = TOO_FAST;
@@ -415,66 +616,107 @@ void loop() {
     }
 
     case MEASUREMENT: {
+      // Calculate the result of the measurement
       fencer_result = current_time - measurement_start_time;
 
-      if ((sync_state == MASTER) && (fencer_result > 50)) {
+      // Display the actual time of the measurement (with leading zeros for clarity)
+      display.showNumberDec(fencer_result, false);
+
+      // If in MASTER mode turn off the synchronization pin after 30 ms
+      if ((sync_state == MASTER) && (fencer_result > 30)) {
           digitalWrite(SYNC_PIN_OUTPUT, LOW);
       }
 
-      /* Aktuální čas od startu měření (zobrazeno s nulama zleva pro výraznější
-       * signál začátku) */
-      display.showNumberDec(fencer_result, true);
-
-      /* Stisknuto v intervalu -> Předhod do stavu s vísledkem. */
+      // If the weapon is pressed during the measurement, go to result mode with the result of the measurement
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
         fencer_state = RESULT;
-        test_time(current_time);
+        fencer_result = touch_time - measurement_start_time;
       }
 
-      /* Čas vypršel -> Předhod do stavu RESULT s chybou TIME_OUT. */
+      // If the measurement time has passed, go to result mode with an error TIME_OUT
       if (current_time - measurement_start_time >= MAX_TIME) {
         fencer_state = RESULT;
         fencer_result = TIME_OUT;
-        test_time(current_time);
       }
       break;
     }
 
     case RESULT: {
+      // Display the result on the LED display
       print_result(weapon_state);
 
-      /* Rušení dlouhého stisku */
+      // Reset the long press flag
       if (!weapon_state) {
         long_press = false;
       }
 
-      /* Začátek dlouhého stisku */
+      // Set the start time of the long press and set the long press flag
       if (weapon_state && (weapon_state != last_weapon_state)) {
         long_press_start_time = current_time;
         long_press = true;
       }
 
-      /* PŘECHOD DO STATUSU ACTIVATION */
+      // If the long press flag is set and the weapon is pressed, go to the activation state
       if (long_press && weapon_state &&
           (current_time - long_press_start_time >= LONG_PRESS)) {
-        fencer_state = ACTIVATION;
         long_press = false;
-
-        /* Počátek synchronizace */
-        digitalWrite(SYNC_PIN_OUTPUT, HIGH);
-        if (digitalRead(SYNC_PIN_INPUT) == HIGH) {
-          sync_state = SLAVE;
-        } else {
-          sync_state = SINGLE;
-        }
-
-        test_time(current_time);
+        to_activation();
       }
       break;
     }
   }
 
-  /* Uložení posledního stavu */
+  // Save the last state of the weapon for the next loop
   last_weapon_state = weapon_state;
-//  delay(1);
+
+  delay(DELAY_TIME);
+}
+
+
+/**
+ * @brief Interrupt function for the epee
+ *
+ * Reads the pin of the connected weapon for the epee. The weapon is
+ * activated when the pin is connected to GND, so the active state is LOW.
+ */
+void epee_interrupt() {
+  /* Read the pin of the connected weapon for the epee */
+  epee_touch = digitalRead(EPEE_PIN) == EPEE_PRESSED;
+
+  /* If the connected weapon is the epee and it is touched, update the touch time */
+  if ((fencer_weapon == EPEE) && epee_touch) {
+    touch_time = millis();
+  }
+}
+
+
+/**
+ * @brief Interrupt function for the foil
+ *
+ * Reads the pin of the connected weapon for the foil. The foil obvod
+ * releases when touched, so the active state is HIGH.
+ */
+void foil_interrupt() {
+  /* Read the pin of the connected weapon for the foil */
+  foil_touch = digitalRead(FOIL_PIN) == FOIL_PRESSED;
+
+  /* If the connected weapon is the foil and it is touched, update the touch time */
+  if ((fencer_weapon == FOIL) && foil_touch) {
+    touch_time = millis();
+  }
+}
+
+
+/**
+ * @brief Interrupt function for the sync pin
+ *
+ * Reads the sync pin and updates the sync time if it is touched.
+ */
+void sync_interrupt() {
+  sync_touch = digitalRead(SYNC_PIN_INPUT) == HIGH;
+
+  /* Update the sync time only on change sync from low to high */
+  if (sync_touch) {
+    sync_time = millis();
+  }
 }
