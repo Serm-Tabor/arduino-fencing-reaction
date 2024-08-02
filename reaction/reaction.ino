@@ -73,6 +73,9 @@
 /* Output pin for synchronization. */
 #define SYNC_PIN_OUTPUT 5
 
+/* Delay time for synchronization signal. */
+#define SYNC_OFF_DELAY 30
+
 /* Control diode indicating the pressed weapon. */
 #define CONTROL_DIODE 13
 
@@ -247,9 +250,6 @@ unsigned long long_press_start_time = 0;
 /**  True if during the long press */
 bool long_press = false;
 
-/**  Time controlling the animation during the release */
-unsigned long animation_time = 0;
-
 /**  Weapon state from the previous step */
 bool last_weapon_state = false;
 
@@ -298,7 +298,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(EPEE_PIN), epee_interrupt, CHANGE);
   attachInterrupt(digitalPinToInterrupt(FOIL_PIN), foil_interrupt, CHANGE);
 
-  display.setBrightness(7);
+  display_on();
 
   // Initialize the weapon
   init_weapon();
@@ -397,7 +397,7 @@ byte* get_result_problem(short result) {
         // Weapon changed.
         case CHANGED_WEAPON: {
             // Return segments for current weapon.
-            switch (fencer_state) {
+            switch (fencer_weapon) {
                 // Epee
                 case EPEE: {
                     return EPEE_SEGMENTS;
@@ -429,11 +429,11 @@ byte* get_result_problem(short result) {
  * @param weapon_state If it is WEAPON_PRESSED, the decimal point is displayed on the display.
  * The visual response to the raised weapon.
  */
-void print_result(bool weapon_state) {
+void print_result() {
 
   // If the result is positive, display it in milliseconds.
   if (fencer_result > 0) {
-    display.showNumberDecEx(fencer_result, (weapon_state) ? COLON_ENABLED : COLON_DISABLED);
+    display.showNumberDecEx(fencer_result, (is_touched()) ? COLON_ENABLED : COLON_DISABLED);
     return;
   }
 
@@ -442,7 +442,7 @@ void print_result(bool weapon_state) {
   memcpy(data, get_result_problem(fencer_result), 4);
 
   // If the weapon is raised, display the decimal point on the display.
-  if (weapon_state) {
+  if (is_touched()) {
     // Decimal point on the display - it is displayed only when the weapon is raised.
     data[1] |= SEG_DP;
   }
@@ -453,12 +453,24 @@ void print_result(bool weapon_state) {
 
 
 /**
+ * @brief Switch to the RESULT state
+ *
+ * Set the result to zero and switch to the RESULT state.
+ */
+void to_result() {
+  fencer_state = RESULT;
+}
+
+
+/**
  * @brief Switch to the WAITING state
  *
  * Set a random delay for the delayed start, or wait for the synchronization signal in the SLAVE state.
  * Display the dvojtečka on the display.
  */
 void to_waiting() {
+  fencer_state = WAITING;
+
   digitalWrite(SYNC_PIN_OUTPUT, LOW);
   // Define the random delay for the delayed start.
   // If the current state is SLAVE, set the delay to maximum. Slave is waiting for the synchronization signal..
@@ -468,7 +480,6 @@ void to_waiting() {
   delay_start_time = millis();
   // Set the result to zero.
   fencer_result = 0;
-  fencer_state = WAITING;
   // Show only colon on the display like a waiting mode
   display.setSegments(COLON_ONLY);
 }
@@ -505,7 +516,6 @@ void to_measurement() {
  */
 void to_activation() {
   fencer_state = ACTIVATION; // Set the fencer state to ACTIVATION
-  animation_time = millis(); // Initialize the animation time
 
   /* Start synchronization */
   digitalWrite(SYNC_PIN_OUTPUT, HIGH); // Set the synchronization pin to HIGH
@@ -516,6 +526,40 @@ void to_activation() {
 }
 
 
+/**
+ * Sets the display brightness to zero
+ */
+void display_off() {
+  display.setBrightness(0);
+}
+
+
+/**
+ * Sets the display brightness to maximum
+ */
+void display_on() {
+  display.setBrightness(7);
+}
+
+
+/**
+ * Updates the display blinking animation based on the elapsed time.
+ *
+ * @param current_time The current time in milliseconds.
+ */
+void blinking_display(unsigned long current_time) {
+  // Calculate the display toggle value, which toggles the display on and off
+  int display_toggle = (current_time / ANIMATION_SPEED) % 2;
+
+  // If the display toggle is 0, turn on the display
+  if (display_toggle == 0) {
+    display_on();
+  } else {
+    // If the display toggle is 1, turn off the display
+    display_off();
+  }
+}
+
 
 /**
  * Updates the waiting animation on the LED display based on the elapsed time.
@@ -524,13 +568,7 @@ void to_activation() {
  */
 void waiting_animation(unsigned long current_time) {
   // Calculate the animation frame based on the elapsed time
-  int animation_frame = (current_time - animation_time) / ANIMATION_SPEED;
-  // If the animation frame exceeds the length, reset it and update the
-  // animation time
-  if (animation_frame >= ANIMATION_LENGTH) {
-    animation_frame = 0;
-    animation_time = current_time;
-  }
+  int animation_frame = ((current_time) / ANIMATION_SPEED) % ANIMATION_LENGTH;
 
   // Display the animation frame on the LED display
   display.setSegments(START_ANIMATION[animation_frame]);
@@ -574,19 +612,20 @@ void loop() {
 
       switch (sync_state) {
         case MASTER:
-          // If in MASTER mode waiting for synchronization of another fencer.
+          // In MASTER mode, if synchronization touch is not detected, switch to waiting state. (wating for another fencer)
           if (!sync_touch) {
             to_waiting();
           }
           break;
         case SINGLE:
-          // If in SINGLE mode, go to waiting mode
+          // In SINGLE mode, no synchronization is needed, switch to waiting state
           to_waiting();
           break;
         case SLAVE:
-          // If in SLAVE mode, turn off the synchronization pin before going to waiting mode
+          // In SLAVE mode, turn off the synchronization pin before switching to waiting state
           digitalWrite(SYNC_PIN_OUTPUT, LOW);
-          // If in SLAVE mode waiting for synchronization of another fencer.
+          // For synchronization of another fencer.
+          // If synchronization touch is not detected, switch to waiting state
           if (!sync_touch) {
             to_waiting();
           }
@@ -609,7 +648,7 @@ void loop() {
 
       // If the weapon is pressed before the start of the measurement, go to result mode with an error TOO_FAST
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
-        fencer_state = RESULT;
+        to_result();
         fencer_result = TOO_FAST;
       }
       break;
@@ -623,19 +662,19 @@ void loop() {
       display.showNumberDec(fencer_result, false);
 
       // If in MASTER mode turn off the synchronization pin after 30 ms
-      if ((sync_state == MASTER) && (fencer_result > 30)) {
+      if ((sync_state == MASTER) && (fencer_result > SYNC_OFF_DELAY)) {
           digitalWrite(SYNC_PIN_OUTPUT, LOW);
       }
 
       // If the weapon is pressed during the measurement, go to result mode with the result of the measurement
       if ((weapon_state) && (weapon_state != last_weapon_state)) {
-        fencer_state = RESULT;
+        to_result();
         fencer_result = touch_time - measurement_start_time;
       }
 
       // If the measurement time has passed, go to result mode with an error TIME_OUT
       if (current_time - measurement_start_time >= MAX_TIME) {
-        fencer_state = RESULT;
+        to_result();
         fencer_result = TIME_OUT;
       }
       break;
@@ -643,7 +682,7 @@ void loop() {
 
     case RESULT: {
       // Display the result on the LED display
-      print_result(weapon_state);
+      print_result();
 
       // Reset the long press flag
       if (!weapon_state) {
