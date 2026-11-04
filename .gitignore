@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Editory
+.vscode/
+.idea/
+
+# Arduino build
+build/
+*.hex
+*.elf
+*.bin
