@@ -1,79 +1,82 @@
+**English** | [Čeština](README.cs.md)
+
 # Arduino attack reaction
 
-Měření a zobrazení času reakce. Měří se od vizuální signalizace po stisknutí tlačítka. Lze zapojit dvě synchronizované jednotky.
+Measures and displays reaction time — from a visual signal until a button is pressed. Two units can be connected and synchronized.
 
-Program je navrhnutý pro spínání zbraní sportovního šermu. Každopádně, je možné ho využít s jakýmkoliv tlačítkem.
+The program is designed for the switches in sport fencing weapons, but it works with any push button.
 
-## Zprovoznění
-Pro zprovoznění jednotky potřebujete
-* Arduino dev board
-* Sedmisegmentový LED displej se čtyřmi bloky (hodinový) s řadičem [__TM1637__](https://www.google.com/search?tbm=isch&q=TM1637%20display) 
+## Setup
+To build a unit you need
+* an Arduino dev board
+* a four-digit seven-segment LED display (clock style) with a [__TM1637__](https://www.google.com/search?tbm=isch&q=TM1637%20display) driver
 
-### Zapojení zbraně
-Zbraň se do jednotky zapojuje podle následujícího schématu, pomocí kabelu pro sportovní šerm:
+### Connecting the weapon
+The weapon is connected to the unit with a sport fencing body cord according to this diagram:
 ```
-     ---- 
-    |    |=====  <-- FOIL_PIN (Fleret)
+     ----
+    |    |=====  <-- FOIL_PIN (Foil)
 ____|    |
          |
 ____     |=====  <-- GND
     |    |
-    |    |=====  <-- EPEE_PIN (Kord)
-     ---- 
+    |    |=====  <-- EPEE_PIN (Épée)
+     ----
 ```
-Pro připojení zbraně stačí pouze kabel. Vstupy ze zbraní jsou v režimu __INPUT_PULLUP__.
+Only the cord is needed to connect the weapon. The weapon inputs use __INPUT_PULLUP__ mode.
 
-#### Zapojení tlačítka místo zbraně
-Mezi piny __GND__ a __EPEE_PIN__ lze připojit libovolné spínací tlačítko. Pokud máte k dispozici rozpínací tlačítko (při stisnutí obvod přeruší) připojte jej mezi piny __GND__ a __FOIL_PIN__.
+#### Using a button instead of a weapon
+Any normally open push button can be connected between __GND__ and __EPEE_PIN__. A normally closed button (one that breaks the circuit when pressed) goes between __GND__ and __FOIL_PIN__.
 
-### Zapojení displeje
-Displej se zapojuje dle knihovny [TM1637](https://github.com/avishorp/TM1637).
+### Connecting the display
+Wire the display as described by the [TM1637](https://github.com/avishorp/TM1637) library.
 
-### Zapojení druhé jednotky
-Pro spojení dvou jednotek je potřeba uzemnit piny __SYNC_PIN_INPUT__ odporem __10k__.
+### Connecting a second unit
+To link two units, the __SYNC_PIN_INPUT__ pins must be pulled to ground through a __10k__ resistor.
 
-__Propojení desek__:
-| Jednotka 1 | Jednotka 2
+__Board wiring__:
+| Unit 1 | Unit 2
 --- | ---
 | Vin | Vin
 | GND | GND
 | __SYNC_PIN_OUTPUT__ | __SYNC_PIN_INPUT__ --_10k_-- GND
 | GND --_10k_-- __SYNC_PIN_INPUT__ | __SYNC_PIN_OUTPUT__
 
-## Chod programu
-Program pracuje ve čtyřech stavech.
+## How it works
+The program runs in four states.
 
-### Výsledek
-Zobrazení změřeného času nebo stavu programu.
+### Result
+Shows the measured time or the program status.
 
-| Hodnota | Popis
+| Value | Meaning
 --- | ---
-| _číslo_ | změřený čas v _ms_
-| __--00--__ | Měření přerušeno.
-| __----__ | Vypršel čas měření.
-| __FOIL__ | Přepnutý režim pro fleret
-| __EPEE__ | Přepnutý režim pro kord
+| _number_ | measured time in _ms_
+| __-00-__ | Measurement aborted.
+| __----__ | Measurement timed out.
+| __FOIL__ | Switched to foil mode
+| __EPEE__ | Switched to épée mode
 
-__Rozsvícená dvojtečka__ na displeji znázorňuje sepnuté tlačítko.
-#### Přechod do stavu Spouštění
-Pokud se drží tlačítko déle než _2s_, přechází se do stavu __Spouštění__.
+A __lit colon__ on the display means the button is pressed.
 
-### Spouštění
-Stav je aktivní po celou dobu stisknutého tlačítka. Při odpojení se přechází do stavu __Čekání__.
+#### Entering the Arming state
+Holding the button for more than _2s_ switches to the __Arming__ state.
 
-#### Synchronizace
-Pokud jsou dvě jednotky propojeny (přes _SYNC_PIN_INPUT_ a _SYNC_PIN_OUTPUT_) a obě jednotky jsou ve stavu __Spouštění__, tak se synchronizují a na obou jednotkách se měří identický čas.
+### Arming
+The state lasts as long as the button is held. On release, the unit moves to the __Waiting__ state.
 
-### Čekání
-Náhodný interval (_3-6s_), který zabrání odhadnout čas startu měření. Po uplynutí intervalu přechází do stavu __Měření__. Pokud jsou jednotky synchronizovány, tak interval určí jedna jednotka a druhou spustí do přechodu __Měření__.
+#### Synchronization
+If two units are connected (via _SYNC_PIN_INPUT_ and _SYNC_PIN_OUTPUT_) and both are in the __Arming__ state, they synchronize and both measure the identical time.
 
-Pokud se během čekání stiskne tlačítko, přechází se do stavu __Výsledek__ s textem __-00-__ a měření je přerušené.
+### Waiting
+A random interval (_3–6s_) that prevents guessing when the measurement starts. When it elapses, the unit moves to the __Measuring__ state. If the units are synchronized, one unit picks the interval and triggers the other into __Measuring__.
 
-### Měření
-Měří se do sepnutí tlačítka. Po stisknutí přechází do stavu __Výsledek__. Stav se ukončí i po uplynutí _10s_ s neznámým výsledkem.
+If the button is pressed during waiting, the unit returns to __Result__ showing __-00-__ and the measurement is aborted.
+
+### Measuring
+Time is measured until the button is pressed, then the unit moves to __Result__. The state also ends after _10s_ with no result.
 
 
-## Chyby a dodělání
-- [ ] Změnit způsob nebo intervaly vykreslování, které měření zpomaluje. V současnosti se dostáváme na přesnost měření 20ms.
-- [ ] Navrhnout synchronizaci více jednotek. V současnosti lze synchronizovat pouze 2.
-- [ ] Navrhnout i jiné měření. Například intervaly mezi dvojzásahem, počet zásahů za _10s_...
+## Known issues and TODO
+- [ ] Change how or how often the display is redrawn, as it slows down measurement. Current accuracy is about 20ms.
+- [ ] Design synchronization for more units. Currently only 2 can be synchronized.
+- [ ] Add other measurements, e.g. the interval between a double hit, number of hits in _10s_...
